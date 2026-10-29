@@ -26,6 +26,7 @@ final class DriveGuardController {
         let bsdName: String?
         let state: State
         let isTimeMachine: Bool
+        let isEncrypted: Bool
         var id: String { key }
     }
 
@@ -59,9 +60,13 @@ final class DriveGuardController {
     private let disks = DiskManager()
     private let power = PowerMonitor()
     private var job: Task<Void, Never>?
+    /// Every job that has been queued and has not finished. Jobs wait for the one before them, so
+    /// cancelling only the newest would leave an older one still waiting on Time Machine.
+    private var jobs: [UUID: Task<Void, Never>] = [:]
     private var started = false
     private var activeReasons: Set<Trigger> = []
     private var tmDestinations: [TimeMachine.Destination] = []
+    private var isPoweringOff = false
 
     private init() {
         owedVolumes = UserDefaults.standard.data(forKey: Self.defaultsKey)
@@ -104,6 +109,10 @@ final class DriveGuardController {
         observe(workspace, NSWorkspace.sessionDidBecomeActiveNotification.rawValue) { $0.triggerEnded(.userSwitch) }
         observe(workspace, NSWorkspace.didMountNotification.rawValue) { $0.refreshDrives() }
         observe(workspace, NSWorkspace.didUnmountNotification.rawValue) { $0.refreshDrives() }
+        observe(workspace, NSWorkspace.willPowerOffNotification.rawValue) { controller in
+            controller.isPoweringOff = true
+            controller.log.add("The Mac is shutting down or restarting; macOS will unmount the drives itself")
+        }
 
         power.onWillSleep = { [unowned self] allow in systemWillSleep(allow: allow) }
         power.onDidWake = { [unowned self] in triggerEnded(.systemSleep) }
@@ -111,6 +120,12 @@ final class DriveGuardController {
 
         refreshDrives()
         log.add("DriveGuard started")
+        let present = disks.mountedExternalVolumes()
+        if present.isEmpty {
+            log.add("External drives at startup: none mounted")
+        } else {
+            log.add("External drives at startup: " + present.map { "\($0.name) (mounted)" }.joined(separator: ", "))
+        }
 
         if !owedVolumes.isEmpty {
             log.add("Found \(owedVolumes.count) volume(s) left unmounted by a previous run", level: .warning)
@@ -148,13 +163,13 @@ final class DriveGuardController {
 
         var entries = mounted.map {
             DriveEntry(key: $0.key, name: $0.name, bsdName: $0.bsdName, state: .mounted,
-                       isTimeMachine: isTimeMachine($0))
+                       isTimeMachine: isTimeMachine($0), isEncrypted: $0.encrypted == true)
         }
         for known in settings.knownDrives where !mountedKeys.contains(known.key) {
             entries.append(DriveEntry(
                 key: known.key, name: known.name, bsdName: nil,
                 state: owedKeys.contains(known.key) ? .unmountedByDriveGuard : .notMounted,
-                isTimeMachine: false
+                isTimeMachine: false, isEncrypted: known.encrypted == true
             ))
         }
         drives = entries.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
@@ -207,7 +222,7 @@ final class DriveGuardController {
             log.add("Still active: " + activeReasons.map(\.title).sorted().joined(separator: ", ") + "; drives stay unmounted")
             return
         }
-        job?.cancel() // stops any waiting/retrying; an unmount already in flight finishes first
+        cancelPendingWork() // stops all waiting/retrying; an unmount already in flight finishes first
         enqueue { await $0.remountAll() }
     }
 
@@ -219,7 +234,7 @@ final class DriveGuardController {
         }
         log.add("System going to sleep")
         activeReasons.insert(.systemSleep)
-        job?.cancel()
+        cancelPendingWork()
         enqueue { controller in
             await controller.unmountAll(trigger: .systemSleep, mode: .sleep)
             gate.fire()
@@ -235,6 +250,29 @@ final class DriveGuardController {
         }
     }
 
+    /// True when quitting should first bring drives back. Not at shutdown or restart: macOS is
+    /// unmounting everything itself then, and it mounts the drives again at startup.
+    var needsRemountBeforeQuit: Bool { !owedVolumes.isEmpty && !isPoweringOff }
+
+    /// Remounts what DriveGuard unmounted before the app quits, waiting at most 20 seconds.
+    func remountBeforeQuit() async {
+        log.add("Quitting: remounting \(owedVolumes.count) drive(s) first")
+        activeReasons.removeAll()
+        cancelPendingWork()
+        enqueue { await $0.remountAll() }
+        let work = job
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let once = Once { continuation.resume() }
+            Task { await work?.value; once.fire() }
+            Task { try? await Task.sleep(for: .seconds(20)); once.fire() }
+        }
+        if owedVolumes.isEmpty {
+            log.add("DriveGuard quit: all drives are mounted")
+        } else {
+            log.add("DriveGuard quit before every drive was back; it will finish remounting next time it starts", level: .warning)
+        }
+    }
+
     func unmountNow() {
         log.add("Manual unmount requested")
         enqueue { await $0.unmountAll(trigger: nil, mode: .normal) }
@@ -243,29 +281,40 @@ final class DriveGuardController {
     func remountNow() {
         log.add("Manual remount requested")
         activeReasons.removeAll()
-        job?.cancel()
+        cancelPendingWork()
         enqueue { await $0.remountAll() }
     }
 
     func remount(key: String) {
         log.add("Manual remount requested for one drive")
-        job?.cancel()
+        cancelPendingWork()
         enqueue { await $0.remountAll(onlyKey: key) }
     }
 
     private func enqueue(_ work: @escaping (DriveGuardController) async -> Void) {
         let previous = job
-        job = Task { [weak self] in
+        let id = UUID()
+        let task = Task { [weak self] in
             await previous?.value
             guard let self else { return }
             await work(self)
+            self.jobs[id] = nil
         }
+        jobs[id] = task
+        job = task
+    }
+
+    /// Cancels everything waiting or retrying (not an unmount macOS is already carrying out).
+    /// Jobs queued after this call are not affected.
+    private func cancelPendingWork() {
+        for task in jobs.values { task.cancel() }
     }
 
     // MARK: Unmount
 
     /// `trigger` is nil for a manual request, which ignores per-drive trigger and delay settings.
     private func unmountAll(trigger: Trigger?, mode: RunMode) async {
+        if Task.isCancelled && mode == .normal { return } // you came back before this job got its turn
         let startedAt = Date()
         let external = disks.mountedExternalVolumes()
         external.forEach(settings.remember)
@@ -275,7 +324,15 @@ final class DriveGuardController {
             guard let trigger else { return true }
             return !settings.config(for: volume.key).disabledTriggers.contains(trigger)
         }
+        // An encrypted drive locks when unmounted, and only its password opens it again. DriveGuard never
+        // handles passwords, so it could not bring the drive back: it is left alone.
+        let locked = volumes.filter { $0.encrypted == true }
+        for volume in locked {
+            log.add("Skipped \"\(volume.name)\": it is encrypted, so macOS would lock it and only its password could open it again. DriveGuard leaves encrypted drives mounted.", level: .warning)
+        }
+        volumes.removeAll { volume in locked.contains { $0.bsdName == volume.bsdName } }
         if volumes.isEmpty {
+            if !locked.isEmpty { return }
             log.add(external.isEmpty
                 ? "No external volumes mounted"
                 : selected.isEmpty
@@ -341,8 +398,20 @@ final class DriveGuardController {
 
             addOwed(volume) // record the debt first so a crash mid-unmount can't strand the drive
             let result = await disks.unmount(volume)
+
+            if result.timedOut {
+                // The request is still out there and may yet complete, so keep the debt: the drive
+                // is remounted (or found already mounted) when you come back.
+                log.add("Unmount of \"\(volume.name)\" (\(volume.bsdName)): \(result.failure ?? "no answer"). It may still finish; DriveGuard will check when you return.", level: .error)
+                Notifier.shared.post(title: "\(volume.name): macOS didn't answer", body: "The unmount request got no reply. DriveGuard will check the drive when you return.")
+                return false
+            }
             guard let reason = result.failure else {
-                log.add("Unmounted \"\(volume.name)\" (\(volume.bsdName))")
+                if let stillAt = disks.mountPath(of: volume) {
+                    log.add("Unmount of \"\(volume.name)\" (\(volume.bsdName)) was reported as done, but it still shows as mounted at \(stillAt)", level: .warning)
+                } else {
+                    log.add("Unmounted \"\(volume.name)\" (\(volume.bsdName)). Confirmed: it is no longer mounted.")
+                }
                 return true
             }
             removeOwed(volume)
@@ -421,25 +490,71 @@ final class DriveGuardController {
 
     // MARK: Remount
 
+    /// Mount attempts per drive, and the pause between them. macOS often mounts a drive itself at the
+    /// moment you unlock, and a request that lands at the same time can fail, so a second look helps.
+    private static let remountAttempts = 3
+    private static let remountPause: Duration = .seconds(3)
+
     private func remountAll(onlyKey: String? = nil) async {
         let pending = owedVolumes.filter { onlyKey == nil || $0.key == onlyKey }
         guard !pending.isEmpty else { return }
         log.add("Remounting \(pending.count) volume(s)")
 
         for volume in pending {
-            switch await disks.remount(volume) {
-            case .mounted:
-                log.add("Remounted \"\(volume.name)\" (\(volume.bsdName))")
-            case .alreadyMounted:
-                log.add("\"\(volume.name)\" is already mounted")
-            case .missing(let why):
-                log.add("Skipped \"\(volume.name)\": \(why)", level: .warning)
-            case .failed(let why):
-                log.add("Remount of \"\(volume.name)\" (\(volume.bsdName)) failed: \(why)", level: .error)
-                Notifier.shared.post(title: "Couldn't remount \(volume.name)", body: why)
-            }
-            removeOwed(volume)
+            await remount(volume)
         }
         refreshDrives()
+    }
+
+    /// Brings one volume back. It is taken off the to-do list only once it is mounted (or gone for good);
+    /// a drive that could not be mounted stays on the list so the next try can finish the job.
+    private func remount(_ volume: ManagedVolume) async {
+        var failure = ""
+        for attempt in 1...Self.remountAttempts {
+            switch await disks.remount(volume) {
+            case .locked:
+                log.add("\"\(volume.name)\" is encrypted and locked, and only its password opens it. Unlock it yourself (Disk Utility, or unplug and replug it). It stays on the list.", level: .error)
+                Notifier.shared.post(title: "\(volume.name) is locked", body: "It is encrypted. Unlock it in Disk Utility, or unplug and replug it.")
+                return
+            case .mounted(let path):
+                if let path {
+                    log.add("Remounted \"\(volume.name)\" (\(volume.bsdName)). Confirmed: it is mounted at \(path).")
+                } else {
+                    log.add("Remounted \"\(volume.name)\" (\(volume.bsdName)), but could not confirm where it is mounted", level: .warning)
+                }
+                removeOwed(volume)
+                return
+            case .alreadyMounted(let path):
+                let where_ = path.map { " at \($0)" } ?? ""
+                if attempt > 1 {
+                    log.add("macOS mounted \"\(volume.name)\" (\(volume.bsdName)) itself while DriveGuard was trying. Confirmed: it is mounted\(where_).")
+                } else {
+                    log.add("\"\(volume.name)\" (\(volume.bsdName)) was already mounted\(where_). macOS may have mounted it itself, for example when you unlocked or after a restart.")
+                }
+                removeOwed(volume)
+                return
+            case .missing(let why):
+                log.add("Skipped \"\(volume.name)\": \(why)", level: .warning)
+                removeOwed(volume)
+                return
+            case .failed(let why):
+                failure = why
+                // macOS may have mounted it in the meantime (it often does at unlock).
+                if let path = disks.mountPath(of: volume) {
+                    log.add("macOS mounted \"\(volume.name)\" (\(volume.bsdName)) itself while DriveGuard was trying (\(why)). Confirmed: it is mounted at \(path).")
+                    removeOwed(volume)
+                    return
+                }
+                if attempt < Self.remountAttempts {
+                    log.add("Mounting \"\(volume.name)\" (\(volume.bsdName)) failed: \(why). Trying again (attempt \(attempt + 1) of \(Self.remountAttempts)).", level: .warning)
+                    do { try await Task.sleep(for: Self.remountPause) } catch {
+                        log.add("Cancelled while retrying \"\(volume.name)\"; it stays on the list to remount", level: .warning)
+                        return
+                    }
+                }
+            }
+        }
+        log.add("Remount of \"\(volume.name)\" (\(volume.bsdName)) failed after \(Self.remountAttempts) attempts: \(failure). It stays on the list; choose Remount All Drives Now to try again, or unplug and replug the drive.", level: .error)
+        Notifier.shared.post(title: "Couldn't remount \(volume.name)", body: failure)
     }
 }

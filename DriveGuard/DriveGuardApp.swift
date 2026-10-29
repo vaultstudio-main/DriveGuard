@@ -147,6 +147,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
     }
+
+    /// Quit brings back any drives DriveGuard unmounted before it exits.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        let controller = DriveGuardController.shared
+        guard controller.needsRemountBeforeQuit else {
+            controller.log.add("DriveGuard quit")
+            return .terminateNow
+        }
+        Task { @MainActor in
+            await controller.remountBeforeQuit()
+            NSApp.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
+    }
 }
 
 private struct MenuBarContent: View {

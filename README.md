@@ -19,7 +19,7 @@ DriveGuard exists because losing backup data is not an option, so it has hard ru
 - It **never unmounts while Time Machine is backing up**, or when it cannot tell. It waits and checks again, as long as it takes. Right before the Mac sleeps it cannot wait, so it skips the drive instead.
 - It **only touches drives you ticked**. Nothing is unmounted until you choose it. The startup disk, internal drives, network shares and disk images are always left alone.
 - It **never holds sleep** longer than your limit (25 seconds at most), and never vetoes it.
-- It **always remounts**, when you return and after a quit or a crash.
+- It **always remounts**, when you return, when you quit, and after a crash. (When the Mac shuts down or restarts, macOS unmounts the drives itself and mounts them again at startup.)
 
 ---
 
@@ -57,6 +57,8 @@ Drives come back once every active trigger has ended, so a screen saver stopping
 
 **Time Machine aware.** Before every unmount it asks Time Machine whether a backup is running, and waits if one is (or if it cannot tell). You choose how often it checks again, from 15 to 120 seconds.
 
+**Encrypted drives are left alone.** macOS locks an encrypted drive when it is unmounted, and only its password opens it again. DriveGuard never asks for or stores passwords, so it leaves encrypted drives mounted (they show an Encrypted badge and can't be ticked).
+
 **Gentle with busy drives.** If macOS refuses an unmount because something is using the drive, DriveGuard retries a few times, names the programs holding the drive open in the activity log, then leaves the drive mounted and tells you. It also waits if a program is actively writing to the drive.
 
 **Careful before sleep.** Just before the Mac sleeps it makes a short attempt, retrying a busy drive every 5 seconds, for as long as your hold limit allows, and then lets the Mac sleep.
@@ -74,14 +76,15 @@ Drives come back once every active trigger has ended, so a screen saver stopping
 - No analytics, no accounts, no advertising, no crash reporting, and nothing about you is sent anywhere.
 - The app makes no network connections of its own. The links in About and Help open in your browser only when you click them.
 - Your choices (which drives, which triggers, delays and options) are stored on your Mac in the app's own settings, along with the short list of drives it has unmounted and still has to remount.
-- The activity log is kept in memory only, and is gone when the app quits unless you export it.
+- The activity log (the last 500 events) is saved in a small file on your Mac, in `~/Library/Application Support/DriveGuard/`, so it survives a quit, a crash or a restart. **Clear** in the log window empties it, and nothing in it is ever sent anywhere.
+- DriveGuard never asks for, stores or handles passwords.
 - To work safely it asks macOS which drives are mounted, asks Time Machine whether a backup is running, and, if an unmount is refused, lists the programs that have files open on that drive. All of this stays on your Mac.
 
 ---
 
 ## Requirements
 
-- A Mac running **macOS 27 or later**.
+- A Mac running **macOS 15 or later**.
 - To build it yourself: **Xcode** (recent version) on a Mac.
 
 DriveGuard runs **without the App Sandbox**, on purpose: to unmount and mount drives and to ask Time Machine for its status, it needs access the sandbox does not allow. That also means it is not made for the Mac App Store, and builds are shared from GitHub.

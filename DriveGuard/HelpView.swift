@@ -45,6 +45,23 @@ struct HelpView: View {
                     Drives it already unmounted still come back.
                     """)
 
+                topic("The activity log", """
+                    Every unmount and remount is recorded, with a line confirming the drive really is \
+                    unmounted or mounted. The log is saved on your Mac, so it is still there after a \
+                    restart: open it with "Open full log…". Clear empties it, and Export saves a copy.
+                    """)
+
+                topic("Encrypted drives", """
+                    DriveGuard leaves encrypted drives alone. macOS locks an encrypted drive when it is \
+                    unmounted, and only its password opens it again. DriveGuard never asks for or stores \
+                    passwords, so it could not bring the drive back. An encrypted drive shows an \
+                    Encrypted badge, can't be ticked, and stays mounted.
+
+                    If you want an encrypted drive out of the way, eject it yourself in Finder and \
+                    unlock it with its password when you need it. (Time Machine unlocks its own \
+                    encrypted backup drive when it needs it.)
+                    """)
+
                 topic("If drives stay unmounted", """
                     Use "Remount All Drives Now" in the menu bar menu, or the Remount button on the \
                     drive. After a quit or crash, DriveGuard remounts leftovers next time it starts.

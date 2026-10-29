@@ -35,6 +35,7 @@ nonisolated enum Trigger: String, CaseIterable, Codable, Sendable {
 nonisolated struct KnownDrive: Codable, Hashable, Sendable {
     let key: String
     var name: String
+    var encrypted: Bool? = nil
 }
 
 /// Settings that apply to one drive.
@@ -150,7 +151,7 @@ final class AppSettings {
     }
 
     func remember(_ volume: ManagedVolume) {
-        let drive = KnownDrive(key: volume.key, name: volume.name)
+        let drive = KnownDrive(key: volume.key, name: volume.name, encrypted: volume.encrypted)
         if let index = knownDrives.firstIndex(where: { $0.key == drive.key }) {
             guard knownDrives[index] != drive else { return }
             knownDrives[index] = drive

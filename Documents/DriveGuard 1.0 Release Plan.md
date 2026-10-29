@@ -20,13 +20,22 @@ Use a spare drive with nothing important on it, **not** the Time Machine drive. 
 - [ ] Screen saver, display sleep and user switch, one at a time: each unmounts and remounts. A screen saver stopping while the screen is still locked does **not** remount.
 - [ ] System sleep: the spare unmounts just before sleep, remounts on wake, and sleep does not feel delayed.
 - [ ] Pause: while paused a lock unmounts nothing. A per-drive delay of one minute waits about a minute.
-- [ ] Quit while a drive is unmounted, relaunch: it remounts the drive and says so.
+- [ ] Encrypted drive: it shows the Encrypted badge, can't be ticked, and a lock leaves it mounted.
+- [ ] Quit while a drive is unmounted: it remounts the drive before exiting, and the log says "Confirmed: it is mounted".
+- [ ] Restart the Mac while the spare is unmounted (screen locked): after startup, the saved log still shows the unmount, "DriveGuard started", the drives mounted at startup, and "was already mounted" for the spare.
 - [ ] Time Machine, once everything above passes: start a backup with Back Up Now and lock the screen. DriveGuard waits and retries, and the backup drive stays mounted until the backup finishes.
 - [ ] Notifications: allowed on first launch, and a failure (a busy drive that runs out of attempts) produces one.
 
 ## Safety work
 
-- [ ] **A timeout for a stuck unmount.** If macOS never answers an unmount request, DriveGuard waits forever. It should log it, notify, and move on to the next drive.
+- [x] **A remount that fails is retried, and never forgotten.** First real test (Oct 29): the lock unmounted the spare and the log confirmed it, and it stayed unmounted through display sleep and two system sleeps. But the remount at unlock failed once (system error 77) while macOS mounted the same drive itself a second later, and DriveGuard dropped the drive from its list. Now: three attempts, a check for whether macOS already mounted it, the drive stays on the list until it is really mounted, and errors are shown in words. Done Oct 29. It needs the lock test repeated.
+- [x] **Unlocking the screen cancels every waiting job.** Third real test (Oct 29): you unlocked at 12:51 while DriveGuard was waiting for Time Machine, but only the newest queued job was cancelled; the older one kept waiting and unmounted the drive at 12:53. Now every waiting or retrying job is cancelled. Done Oct 29. **Needs trying: start a backup, lock, unlock after 20 seconds, wait 3 minutes: the log should say it cancelled, and the drive must stay mounted.**
+- [x] **Encrypted drives are left alone (no password feature).** Second real test (Oct 29): the Time Machine drive is encrypted, so macOS locked it on unmount, and a plain mount fails with "No locks available" (system error 77) until the password is given. An attempt to have DriveGuard keep the password in the keychain and unlock the drive was refused by macOS (error -69464, "restricted by Sandbox"), so for 1.0 the password feature was removed. Encrypted drives are detected, cannot be ticked, and are skipped with a log line. A drive found locked on remount stays on the list with a plain message. Done Oct 29. Possible later: revisit unlocking if macOS offers a supported permission.
+- [x] **Quit remounts first.** Choosing Quit while drives are unmounted brings them back before the app exits (waiting at most 20 seconds). At shutdown or restart it does not wait: macOS unmounts the drives itself and mounts them again at startup. Done Oct 29.
+- [x] **The activity log is saved on the Mac** (`~/Library/Application Support/DriveGuard/activity.log`, the last 500 events), so it survives a quit, a crash or a restart. Done Oct 29.
+- [x] **The log confirms it.** Every unmount says "Confirmed: it is no longer mounted" and every remount says "Confirmed: it is mounted at <path>", checked with macOS after the fact, and startup lists the external drives that are mounted. Done Oct 29.
+
+- [x] **A timeout for a stuck unmount.** If macOS does not answer an unmount (90 s) or mount (60 s) request, DriveGuard stops waiting, logs it, notifies, and keeps the drive on its list to check when you return. Done Oct 29. It needs trying for real, if a drive ever hangs.
 - [ ] **Tests for the decision logic:** when to unmount, when to remount, how overlapping triggers combine, delays and cancellation. These can run without any drives, and a mistake here is the costly kind.
 - [ ] **A "test run" button** that shows what would happen on a lock, without unmounting anything.
 - [ ] **A reminder for drives left unmounted** well after the person is back (the icon or a notification).
@@ -37,7 +46,7 @@ Use a spare drive with nothing important on it, **not** the Time Machine drive. 
 
 - [ ] The window sometimes takes several seconds to appear at launch. Find out why.
 - [ ] Status is shown twice (the top card and the bottom bar). Keep the status in the bar and leave only Pause at the top.
-- [ ] Lower the macOS requirement if older versions work (it is set to macOS 27 now), and update the website and README to match.
+- [x] Lower the macOS requirement to 15 (it builds for 15 with no availability errors), and update the website and README to match. Done Oct 29. **Still to do: run it once on a Mac with macOS 15.**
 - [ ] Check Launch at login from a copy in Applications, including that it stays in the menu bar without opening the window.
 - [ ] Write the first-run help: the app does nothing until a drive is ticked, so say so.
 

@@ -45,11 +45,18 @@ struct DrivesSection: View {
                                 .padding(.horizontal, 6).padding(.vertical, 1)
                                 .background(.blue.opacity(0.15), in: Capsule())
                         }
+                        if drive.isEncrypted {
+                            Label("Encrypted", systemImage: "lock.fill")
+                                .font(.caption2)
+                                .padding(.horizontal, 6).padding(.vertical, 1)
+                                .background(.orange.opacity(0.18), in: Capsule())
+                        }
                     }
                     Text(statusText(drive)).font(.caption).foregroundStyle(.secondary)
                 }
             }
             .padding(.vertical, 4)
+            .disabled(drive.isEncrypted)
             Spacer()
             if drive.state == .unmountedByDriveGuard {
                 Button("Remount") { controller.remount(key: drive.key) }
@@ -82,6 +89,9 @@ struct DrivesSection: View {
         case .mounted: text = "Mounted"
         case .unmountedByDriveGuard: text = "Unmounted by DriveGuard"
         case .notMounted: text = "Not connected"
+        }
+        if drive.isEncrypted {
+            text += " · left mounted (encrypted)"
         }
         let config = settings.config(for: drive.key)
         if config.delaySeconds > 0 { text += " · waits \(delayLabel(config.delaySeconds))" }
@@ -127,7 +137,7 @@ private struct DriveConfigView: View {
         }
         .formStyle(.grouped)
         .padding(.vertical, 8)
-        .frame(width: 360, height: 460)
+        .frame(width: 380, height: 460)
     }
 }
 
