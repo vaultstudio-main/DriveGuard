@@ -16,6 +16,7 @@ struct ContentView: View {
     @State private var showingLog = false
     @State private var showingSafety = false
     @State private var showingTiming = false
+    @State private var showingWelcome = false
 
     var body: some View {
         Form {
@@ -29,7 +30,11 @@ struct ContentView: View {
         .safeAreaInset(edge: .bottom, spacing: 0) { StatusBar() }
         .frame(width: 540, height: 870)
         .sheet(isPresented: $showingLog) { FullLogView() }
-        .onAppear { loginItem.refresh() }
+        .sheet(isPresented: $showingWelcome) { WelcomeView() }
+        .onAppear {
+            loginItem.refresh()
+            if !UserDefaults.standard.bool(forKey: WelcomeView.shownKey) { showingWelcome = true }
+        }
     }
 
     // MARK: Status

@@ -60,7 +60,8 @@ struct HelpView: View {
                     To unlock drives, macOS requires you to give DriveGuard Full Disk Access: open System \
                     Settings > Privacy & Security > Full Disk Access, switch DriveGuard on, then quit and \
                     reopen it. Until then DriveGuard won't save a password or unmount an encrypted drive, \
-                    because it could not bring it back. If a drive ever stays locked, unlock it in Disk Utility.
+                    because it could not bring it back. The same goes if you switch Full Disk Access off later: \
+                    DriveGuard leaves the drive mounted and says so in the log. If a drive ever stays locked, unlock it in Disk Utility.
                     """)
 
                 topic("If drives stay unmounted", """

@@ -35,8 +35,8 @@ Newer macOS makes Time Machine drives encrypted, and macOS refuses `diskutil apf
 - [x] "Open Full Disk Access settings" button in the drive's settings; Help, README explain the permission.
 - [ ] **Needs trying for real:** give DriveGuard Full Disk Access, quit and reopen it, save Backup's password (expect "Checked with macOS and saved"), lock and unlock (expect `Unmounted … Confirmed`, then `Remounted … Confirmed`).
 - [ ] Does the permission survive a new build or a re-signed release? Check with the notarized build.
-- [ ] If Full Disk Access is turned off later while a password is saved, a drive could be unmounted and then fail to unlock. Add a check before unmounting.
-- [ ] First-run onboarding step that explains Full Disk Access.
+- [x] If Full Disk Access is turned off later while a password is saved, a drive could be unmounted and then fail to unlock. Add a check before unmounting.
+- [x] First-run onboarding step that explains Full Disk Access (a welcome sheet, shown once).
 - [ ] Update the website text (driveguard, privacy, support) once the real test passes.
 
 ## Safety work
@@ -61,7 +61,7 @@ Newer macOS makes Time Machine drives encrypted, and macOS refuses `diskutil apf
 - [ ] Status is shown twice (the top card and the bottom bar). Keep the status in the bar and leave only Pause at the top.
 - [x] Lower the macOS requirement to 15 (it builds for 15 with no availability errors), and update the website and README to match. Done Oct 29. (Not tested on a Mac running macOS 15; decided to leave that.)
 - [ ] Check Launch at login from a copy in Applications, including that it stays in the menu bar without opening the window.
-- [ ] Write the first-run help: the app does nothing until a drive is ticked, so say so.
+- [x] Write the first-run help: the app does nothing until a drive is ticked, so say so.
 
 ## Publishing
 

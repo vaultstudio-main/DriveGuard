@@ -386,9 +386,15 @@ final class DriveGuardController {
         }
         // An encrypted drive locks when unmounted, and only its password opens it again. Without a saved
         // password DriveGuard could never bring it back, so it is left alone.
-        let locked = volumes.filter { $0.encrypted == true && !DrivePasswords.has($0.key) }
+        // Even with a saved password, macOS refuses the unlock when Full Disk Access has been switched off.
+        let canUnlock = FullDiskAccess.isGranted
+        let locked = volumes.filter { $0.encrypted == true && (!DrivePasswords.has($0.key) || !canUnlock) }
         for volume in locked {
-            log.add("Skipped \"\(volume.name)\": it is encrypted, and DriveGuard has no password to unlock it again. Add the password in the drive's settings (the slider button next to it).", level: .warning)
+            if DrivePasswords.has(volume.key) {
+                log.add("Skipped \"\(volume.name)\": it is encrypted and DriveGuard no longer has Full Disk Access, so it could not unlock the drive again. Switch DriveGuard on under System Settings > Privacy & Security > Full Disk Access, then quit and reopen it.", level: .warning)
+            } else {
+                log.add("Skipped \"\(volume.name)\": it is encrypted, and DriveGuard has no password to unlock it again. Add the password in the drive's settings (the slider button next to it).", level: .warning)
+            }
         }
         volumes.removeAll { volume in locked.contains { $0.bsdName == volume.bsdName } }
         if volumes.isEmpty {
