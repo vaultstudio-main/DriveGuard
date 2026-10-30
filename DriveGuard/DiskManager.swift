@@ -107,6 +107,45 @@ final class DiskManager {
         return (desc[kDADiskDescriptionVolumePathKey as String] as? URL)?.path
     }
 
+    // MARK: Finding a drive again
+
+    /// The volume as it is connected right now, or nil if it is not connected. The BSD name (disk7s1) can
+    /// change after a restart or a replug, so when the saved name no longer points at the same volume it is
+    /// looked up by volume ID instead.
+    func resolve(_ volume: ManagedVolume) async -> ManagedVolume? {
+        if isSameVolume(bsdName: volume.bsdName, as: volume) { return volume }
+        guard let uuid = volume.volumeUUID,
+              let data = await Tool.run("/usr/sbin/diskutil", ["info", "-plist", uuid]),
+              let plist = try? PropertyListSerialization.propertyList(from: data, format: nil),
+              let info = plist as? [String: Any],
+              let name = info["DeviceIdentifier"] as? String,
+              isSameVolume(bsdName: name, as: volume)
+        else { return nil }
+        return ManagedVolume(bsdName: name, volumeUUID: volume.volumeUUID, name: volume.name,
+                             mountPath: volume.mountPath, encrypted: volume.encrypted)
+    }
+
+    /// Whether the disk with this BSD name exists and is the volume we mean. A locked volume may not
+    /// report its ID, in which case the name alone is trusted (as it always was).
+    private func isSameVolume(bsdName: String, as volume: ManagedVolume) -> Bool {
+        guard
+            let disk = DADiskCreateFromBSDName(kCFAllocatorDefault, session, bsdName),
+            let desc = DADiskCopyDescription(disk) as? [String: Any]
+        else { return false }
+        if let expected = volume.volumeUUID,
+           let actual = uuidString(desc[kDADiskDescriptionVolumeUUIDKey as String]) {
+            return expected == actual
+        }
+        return true
+    }
+
+    /// Calls `handler` whenever macOS reports a disk appearing (including drives that appear locked, which
+    /// produce no "mounted" notification). Many events arrive at once; the caller should debounce.
+    func watchForNewDisks(_ handler: @escaping @MainActor @Sendable () -> Void) {
+        let box = Unmanaged.passRetained(AppearBox(handler)).toOpaque()
+        DARegisterDiskAppearedCallback(session, nil, diskAppeared, box)
+    }
+
     enum RemountOutcome {
         case mounted(path: String?)
         case alreadyMounted(path: String?)
@@ -272,6 +311,17 @@ private nonisolated func describe(_ dissenter: DADissenter?) -> DiskOpResult {
     let busy = code == 0xF8DA0010 // kDAReturnBusy
     if busy { reason = "volume is busy (files in use): \(reason)" }
     return DiskOpResult(failure: "\(reason) [0x\(String(code, radix: 16))]", busy: busy)
+}
+
+private nonisolated final class AppearBox: @unchecked Sendable {
+    let handler: @MainActor @Sendable () -> Void
+    init(_ handler: @escaping @MainActor @Sendable () -> Void) { self.handler = handler }
+}
+
+private nonisolated func diskAppeared(_ disk: DADisk, _ context: UnsafeMutableRawPointer?) {
+    guard let context else { return }
+    let box = Unmanaged<AppearBox>.fromOpaque(context).takeUnretainedValue()
+    Task { @MainActor in box.handler() }
 }
 
 private nonisolated func unmountDone(_ disk: DADisk, _ dissenter: DADissenter?, _ context: UnsafeMutableRawPointer?) {

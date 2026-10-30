@@ -108,6 +108,7 @@ final class DriveGuardController {
         observe(workspace, NSWorkspace.sessionDidResignActiveNotification.rawValue) { $0.triggerBegan(.userSwitch) }
         observe(workspace, NSWorkspace.sessionDidBecomeActiveNotification.rawValue) { $0.triggerEnded(.userSwitch) }
         observe(workspace, NSWorkspace.didMountNotification.rawValue) { $0.refreshDrives() }
+        disks.watchForNewDisks { DriveGuardController.shared.diskAppeared() }
         observe(workspace, NSWorkspace.didUnmountNotification.rawValue) { $0.refreshDrives() }
         observe(workspace, NSWorkspace.willPowerOffNotification.rawValue) { controller in
             controller.isPoweringOff = true
@@ -133,6 +134,27 @@ final class DriveGuardController {
                                  body: "DriveGuard is remounting \(owedVolumes.count) volume(s) from a previous run.")
             enqueue { await $0.remountAll() }
         }
+    }
+
+    private var appearGeneration = 0
+
+    /// A disk showed up (after a restart or a replug). If a drive is still owed and the Mac is not in the
+    /// middle of being away, try to bring it back once the burst of events settles.
+    private func diskAppeared() {
+        guard started, !owedVolumes.isEmpty else { return }
+        appearGeneration += 1
+        let generation = appearGeneration
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(3))
+            guard let self, generation == self.appearGeneration else { return }
+            self.remountOwedIfBack()
+        }
+    }
+
+    private func remountOwedIfBack() {
+        guard !owedVolumes.isEmpty, activeReasons.isEmpty, !isPoweringOff, jobs.isEmpty else { return }
+        log.add("A drive appeared; checking the \(owedVolumes.count) drive(s) still waiting to be remounted")
+        enqueue { await $0.remountAll() }
     }
 
     private func observe(_ center: NotificationCenter, _ name: String,
@@ -549,7 +571,13 @@ final class DriveGuardController {
     private func remount(_ volume: ManagedVolume) async {
         var failure = ""
         for attempt in 1...Self.remountAttempts {
-            switch await disks.remount(volume, password: { DrivePasswords.read(volume.key) }) {
+            // The disk name can change after a restart; find the drive by its volume ID. A drive that is not
+            // connected (yet) stays on the list, and is tried again when a disk appears.
+            guard let current = await disks.resolve(volume) else {
+                log.add("\"\(volume.name)\" is not connected right now. It stays on the list, and DriveGuard remounts it when it appears.", level: .warning)
+                return
+            }
+            switch await disks.remount(current, password: { DrivePasswords.read(volume.key) }) {
             case .needsPassword:
                 log.add("\"\(volume.name)\" is encrypted and locked, and DriveGuard has no password for it. Unlock it yourself (Disk Utility, or unplug and replug it), or save its password in the drive's settings and choose Remount All Drives Now.", level: .error)
                 Notifier.shared.post(title: "\(volume.name) needs its password", body: "It is encrypted and locked. Unlock it in Disk Utility, or save its password in DriveGuard.")
@@ -587,7 +615,7 @@ final class DriveGuardController {
             case .failed(let why):
                 failure = why
                 // macOS may have mounted it in the meantime (it often does at unlock).
-                if let path = disks.mountPath(of: volume) {
+                if let path = disks.mountPath(of: current) {
                     log.add("macOS mounted \"\(volume.name)\" (\(volume.bsdName)) itself while DriveGuard was trying (\(why)). Confirmed: it is mounted at \(path).")
                     removeOwed(volume)
                     return
