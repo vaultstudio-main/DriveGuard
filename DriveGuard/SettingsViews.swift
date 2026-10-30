@@ -49,14 +49,13 @@ struct DrivesSection: View {
                             Label("Encrypted", systemImage: "lock.fill")
                                 .font(.caption2)
                                 .padding(.horizontal, 6).padding(.vertical, 1)
-                                .background(.orange.opacity(0.18), in: Capsule())
+                                .background((DrivePasswords.has(drive.key) ? Color.green : Color.orange).opacity(0.18), in: Capsule())
                         }
                     }
                     Text(statusText(drive)).font(.caption).foregroundStyle(.secondary)
                 }
             }
             .padding(.vertical, 4)
-            .disabled(drive.isEncrypted)
             Spacer()
             if drive.state == .unmountedByDriveGuard {
                 Button("Remount") { controller.remount(key: drive.key) }
@@ -65,7 +64,7 @@ struct DrivesSection: View {
                 .labelStyle(.iconOnly)
                 .buttonStyle(.borderless)
                 .help("Delay and per-trigger settings for this drive")
-                .popover(isPresented: Binding(
+                .sheet(isPresented: Binding(
                     get: { configuring == drive.key },
                     set: { if !$0 { configuring = nil } }
                 )) {
@@ -91,7 +90,7 @@ struct DrivesSection: View {
         case .notMounted: text = "Not connected"
         }
         if drive.isEncrypted {
-            text += " · left mounted (encrypted)"
+            text += DrivePasswords.has(drive.key) ? " · password saved" : " · needs its password to be managed"
         }
         let config = settings.config(for: drive.key)
         if config.delaySeconds > 0 { text += " · waits \(delayLabel(config.delaySeconds))" }
@@ -107,9 +106,19 @@ private func delayLabel(_ seconds: Int) -> String {
 private struct DriveConfigView: View {
     let drive: DriveGuardController.DriveEntry
     private let settings = AppSettings.shared
+    private let controller = DriveGuardController.shared
+
+    @State private var password = ""
+    @State private var hasPassword = false
+    @State private var working = false
+    @State private var note: String?
+    @State private var needsPermission = false
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
+        VStack(spacing: 0) {
         Form {
+            if drive.isEncrypted { encryptedSection }
             Section(drive.name) {
                 Picker("Wait after trigger", selection: Binding(
                     get: { settings.config(for: drive.key).delaySeconds },
@@ -136,8 +145,76 @@ private struct DriveConfigView: View {
             }
         }
         .formStyle(.grouped)
-        .padding(.vertical, 8)
-        .frame(width: 380, height: 460)
+            Divider()
+            HStack {
+                Spacer()
+                Button("Done") { dismiss() }
+                    .keyboardShortcut(.defaultAction)
+            }
+            .padding(12)
+        }
+        .frame(width: 400, height: drive.isEncrypted ? 680 : 480)
+        .onAppear { hasPassword = DrivePasswords.has(drive.key) }
+    }
+
+    private var encryptedSection: some View {
+        Section("Encrypted drive") {
+            Text("macOS locks this drive when it is unmounted, and needs its password to mount it again. Give DriveGuard the password and it unlocks the drive when you return. Without it, DriveGuard leaves this drive alone.")
+                .font(.caption).foregroundStyle(.secondary)
+            if hasPassword {
+                Label("Password saved in your keychain", systemImage: "checkmark.seal.fill")
+                    .foregroundStyle(.green)
+                Button("Remove saved password", role: .destructive) {
+                    controller.removePassword(for: drive)
+                    hasPassword = false
+                    note = nil
+                    controller.refreshDrives()
+                }
+            } else {
+                SecureField("Drive password", text: $password)
+                Button(working ? "Checking…" : "Save to Keychain") { save() }
+                    .disabled(password.isEmpty || working)
+            }
+            if let note {
+                Text(note).font(.caption).foregroundStyle(.secondary)
+            }
+            if needsPermission {
+                Button("Open Full Disk Access settings") {
+                    if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles") {
+                        NSWorkspace.shared.open(url)
+                    }
+                }
+            }
+            Text("The password lives in your Mac's keychain. It is never written to the log and never sent anywhere.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private func save() {
+        let entered = password
+        working = true
+        note = nil
+        needsPermission = false
+        Task {
+            let result = await controller.savePassword(entered, for: drive)
+            working = false
+            switch result {
+            case .saved(let verified, let detail):
+                password = ""
+                hasPassword = true
+                note = verified
+                    ? "Checked with macOS and saved."
+                    : "Saved. macOS couldn't check it just now" + (detail.map { " (\($0))" } ?? "") + ", so it is checked the first time the drive is unlocked."
+            case .refused:
+                note = "macOS says that password is wrong, so it was not saved."
+            case .notPermitted:
+                needsPermission = true
+                note = "macOS won't let DriveGuard unlock drives yet, so nothing was saved and this drive stays mounted. Switch DriveGuard on under Full Disk Access, then quit and reopen DriveGuard and try again."
+            case .failed:
+                note = "Could not save it to the keychain."
+            }
+            controller.refreshDrives()
+        }
     }
 }
 

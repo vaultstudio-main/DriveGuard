@@ -20,17 +20,29 @@ Use a spare drive with nothing important on it, **not** the Time Machine drive. 
 - [ ] Screen saver, display sleep and user switch, one at a time: each unmounts and remounts. A screen saver stopping while the screen is still locked does **not** remount.
 - [ ] System sleep: the spare unmounts just before sleep, remounts on wake, and sleep does not feel delayed.
 - [ ] Pause: while paused a lock unmounts nothing. A per-drive delay of one minute waits about a minute.
-- [ ] Encrypted drive: it shows the Encrypted badge, can't be ticked, and a lock leaves it mounted.
+- [ ] Encrypted drive: with Full Disk Access given, save its password (it should say "Checked with macOS and saved"), lock and unlock. Expect `Unmounted … Confirmed`, then `Remounted … Confirmed`. A wrong password should be refused and not saved.
 - [ ] Quit while a drive is unmounted: it remounts the drive before exiting, and the log says "Confirmed: it is mounted".
 - [ ] Restart the Mac while the spare is unmounted (screen locked): after startup, the saved log still shows the unmount, "DriveGuard started", the drives mounted at startup, and "was already mounted" for the spare.
 - [ ] Time Machine, once everything above passes: start a backup with Back Up Now and lock the screen. DriveGuard waits and retries, and the backup drive stays mounted until the backup finishes.
 - [ ] Notifications: allowed on first launch, and a failure (a busy drive that runs out of attempts) produces one.
 
+## Encrypted drives (solved: Full Disk Access, no helper)
+
+Newer macOS makes Time Machine drives encrypted, and macOS refuses `diskutil apfs unlockVolume` (error -69464, "restricted by Sandbox") from any app that lacks a privacy permission. **Test Oct 29: with Full Disk Access given to Terminal, the unlock worked.** So no privileged helper is needed; DriveGuard needs Full Disk Access. See [Encrypted Drives Design.md](Encrypted%20Drives%20Design.md).
+
+- [x] Password saved in the keychain, checked with macOS; refused and not saved while macOS forbids unlocking (so a drive is never unmounted that cannot be brought back). Rebuilt Oct 29.
+- [x] On return, a locked drive gets about 5 seconds for macOS to unlock it itself, then DriveGuard unlocks it with the saved password. A wrong password is never retried.
+- [x] "Open Full Disk Access settings" button in the drive's settings; Help, README explain the permission.
+- [ ] **Needs trying for real:** give DriveGuard Full Disk Access, quit and reopen it, save Backup's password (expect "Checked with macOS and saved"), lock and unlock (expect `Unmounted … Confirmed`, then `Remounted … Confirmed`).
+- [ ] Does the permission survive a new build or a re-signed release? Check with the notarized build.
+- [ ] If Full Disk Access is turned off later while a password is saved, a drive could be unmounted and then fail to unlock. Add a check before unmounting.
+- [ ] First-run onboarding step that explains Full Disk Access.
+- [ ] Update the website text (driveguard, privacy, support) once the real test passes.
+
 ## Safety work
 
 - [x] **A remount that fails is retried, and never forgotten.** First real test (Oct 29): the lock unmounted the spare and the log confirmed it, and it stayed unmounted through display sleep and two system sleeps. But the remount at unlock failed once (system error 77) while macOS mounted the same drive itself a second later, and DriveGuard dropped the drive from its list. Now: three attempts, a check for whether macOS already mounted it, the drive stays on the list until it is really mounted, and errors are shown in words. Done Oct 29. It needs the lock test repeated.
 - [x] **Unlocking the screen cancels every waiting job.** Third real test (Oct 29): you unlocked at 12:51 while DriveGuard was waiting for Time Machine, but only the newest queued job was cancelled; the older one kept waiting and unmounted the drive at 12:53. Now every waiting or retrying job is cancelled. Done Oct 29. **Needs trying: start a backup, lock, unlock after 20 seconds, wait 3 minutes: the log should say it cancelled, and the drive must stay mounted.**
-- [x] **Encrypted drives are left alone (no password feature).** Second real test (Oct 29): the Time Machine drive is encrypted, so macOS locked it on unmount, and a plain mount fails with "No locks available" (system error 77) until the password is given. An attempt to have DriveGuard keep the password in the keychain and unlock the drive was refused by macOS (error -69464, "restricted by Sandbox"), so for 1.0 the password feature was removed. Encrypted drives are detected, cannot be ticked, and are skipped with a log line. A drive found locked on remount stays on the list with a plain message. Done Oct 29. Possible later: revisit unlocking if macOS offers a supported permission.
 - [x] **Quit remounts first.** Choosing Quit while drives are unmounted brings them back before the app exits (waiting at most 20 seconds). At shutdown or restart it does not wait: macOS unmounts the drives itself and mounts them again at startup. Done Oct 29.
 - [x] **The activity log is saved on the Mac** (`~/Library/Application Support/DriveGuard/activity.log`, the last 500 events), so it survives a quit, a crash or a restart. Done Oct 29.
 - [x] **The log confirms it.** Every unmount says "Confirmed: it is no longer mounted" and every remount says "Confirmed: it is mounted at <path>", checked with macOS after the fact, and startup lists the external drives that are mounted. Done Oct 29.

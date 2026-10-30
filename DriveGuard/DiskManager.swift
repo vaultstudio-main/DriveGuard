@@ -112,11 +112,28 @@ final class DiskManager {
         case alreadyMounted(path: String?)
         case missing(String)
         case failed(String)
-        /// Encrypted and locked: only its password opens it, and DriveGuard never handles passwords.
-        case locked
+        /// Encrypted and locked, with no saved password to unlock it.
+        case needsPassword
+        /// The saved password was refused.
+        case wrongPassword
+        /// macOS will not let DriveGuard unlock drives (Full Disk Access is missing), whatever the password.
+        case notPermitted
     }
 
-    func remount(_ volume: ManagedVolume) async -> RemountOutcome {
+    enum PasswordCheck {
+        case verified
+        case wrong
+        /// macOS refused to even try: DriveGuard lacks the privacy permission to unlock drives.
+        case notPermitted
+        /// macOS could not check it now; it is checked for real the next time the drive is unlocked.
+        case unverifiable(String)
+    }
+
+    /// How long to give macOS to unlock a returning drive by itself before DriveGuard steps in.
+    private static let nativeUnlockGrace: Duration = .seconds(5)
+
+    /// `password` is only called if the drive turns out to be locked, so the keychain is not touched otherwise.
+    func remount(_ volume: ManagedVolume, password: () -> String?) async -> RemountOutcome {
         guard
             let disk = DADiskCreateFromBSDName(kCFAllocatorDefault, session, volume.bsdName),
             let desc = DADiskCopyDescription(disk) as? [String: Any]
@@ -133,7 +150,21 @@ final class DiskManager {
             return .alreadyMounted(path: url.path)
         }
         // An encrypted volume locks when it is unmounted, and a plain mount can't open it.
-        if volume.encrypted == true, await isLocked(volume) { return .locked }
+        if volume.encrypted == true, await isLocked(volume) {
+            // macOS often unlocks a returning drive itself (from the keychain); give it a moment first.
+            try? await Task.sleep(for: Self.nativeUnlockGrace)
+            if Task.isCancelled { return .failed("cancelled") }
+            if let path = mountPath(of: volume) { return .alreadyMounted(path: path) }
+            if await isLocked(volume) {
+                guard let secret = password() else { return .needsPassword }
+                let result = await unlock(volume, password: secret)
+                if let failure = result.failure {
+                    if Self.looksLikePermissionRefusal(failure) { return .notPermitted }
+                    return Self.looksLikeWrongPassword(failure) ? .wrongPassword : .failed(failure)
+                }
+                return .mounted(path: mountPath(of: volume))
+            }
+        }
         let timeout = Self.mountTimeout
         let result: DiskOpResult = await withCheckedContinuation { cont in
             let box = ResultBox(cont)
@@ -157,6 +188,47 @@ final class DiskManager {
             let info = plist as? [String: Any]
         else { return false }
         return info["Locked"] as? Bool == true
+    }
+
+    /// Unlocks and mounts a locked encrypted APFS volume. The password goes in through standard input,
+    /// never on the command line, and is scrubbed from anything that comes back.
+    private func unlock(_ volume: ManagedVolume, password: String) async -> DiskOpResult {
+        guard let result = await Tool.runCapturing(
+            "/usr/sbin/diskutil", ["apfs", "unlockVolume", volume.bsdName, "-stdinpassphrase"], input: password
+        ) else { return DiskOpResult(failure: "could not run diskutil") }
+        if result.status == 0 { return DiskOpResult(failure: nil) }
+        return DiskOpResult(failure: Self.firstLine(of: result.output, scrubbing: password))
+    }
+
+    /// Checks a password against the volume without unlocking anything.
+    func verifyPassword(_ password: String, for volume: ManagedVolume) async -> PasswordCheck {
+        guard let uuid = volume.volumeUUID else { return .unverifiable("this drive has no volume ID") }
+        guard let result = await Tool.runCapturing(
+            "/usr/sbin/diskutil",
+            ["apfs", "unlockVolume", volume.bsdName, "-user", uuid, "-stdinpassphrase", "-verify"],
+            input: password
+        ) else { return .unverifiable("could not run diskutil") }
+        if result.status == 0 { return .verified }
+        let text = Self.firstLine(of: result.output, scrubbing: password)
+        if Self.looksLikePermissionRefusal(text) { return .notPermitted }
+        return Self.looksLikeWrongPassword(text) ? .wrong : .unverifiable(text)
+    }
+
+    /// diskutil's answer when macOS's privacy rules refuse the request: error -69464, "restricted by Sandbox".
+    private nonisolated static func looksLikePermissionRefusal(_ text: String) -> Bool {
+        text.contains("-69464") || text.lowercased().contains("restricted by sandbox")
+    }
+
+    private nonisolated static func looksLikeWrongPassword(_ text: String) -> Bool {
+        let lower = text.lowercased()
+        return text.contains("-69591") || lower.contains("incorrect") || lower.contains("wrong") || lower.contains("invalid pass")
+    }
+
+    private nonisolated static func firstLine(of output: String, scrubbing secret: String) -> String {
+        let line = output.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }
+            .first { !$0.isEmpty } ?? "no reason given"
+        let clean = secret.isEmpty ? line : line.replacingOccurrences(of: secret, with: "•••")
+        return String(clean.prefix(240))
     }
 
     private func uuidString(_ value: Any?) -> String? {

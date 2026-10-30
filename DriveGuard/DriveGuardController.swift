@@ -273,6 +273,44 @@ final class DriveGuardController {
         }
     }
 
+    // MARK: Drive passwords
+
+    enum PasswordSave {
+        case saved(verified: Bool, note: String?)
+        case refused
+        /// macOS will not let DriveGuard unlock drives yet (Full Disk Access): nothing was saved.
+        case notPermitted
+        case failed
+    }
+
+    /// Checks a password with macOS where it can, then keeps it in the keychain. A password macOS says is
+    /// wrong is not saved, and neither is one while macOS forbids DriveGuard to unlock drives: unmounting a
+    /// drive DriveGuard cannot bring back would strand it. The password is never written to the log.
+    func savePassword(_ password: String, for drive: DriveEntry) async -> PasswordSave {
+        var verified = false
+        var note: String?
+        if let bsd = drive.bsdName {
+            let volume = ManagedVolume(bsdName: bsd, volumeUUID: drive.key.hasPrefix("name:") ? nil : drive.key,
+                                       name: drive.name)
+            switch await disks.verifyPassword(password, for: volume) {
+            case .verified: verified = true
+            case .wrong: return .refused
+            case .notPermitted:
+                log.add("macOS will not let DriveGuard unlock \"\(drive.name)\" (error -69464). DriveGuard needs Full Disk Access (System Settings > Privacy & Security > Full Disk Access), then quit and reopen it. Nothing was saved and the drive will not be unmounted.", level: .warning)
+                return .notPermitted
+            case .unverifiable(let why): note = why
+            }
+        }
+        guard DrivePasswords.save(password, for: drive.key, label: "DriveGuard: \(drive.name)") else { return .failed }
+        log.add("Saved a password for \"\(drive.name)\" in your keychain" + (verified ? " (checked with macOS)" : ""))
+        return .saved(verified: verified, note: note)
+    }
+
+    func removePassword(for drive: DriveEntry) {
+        DrivePasswords.remove(drive.key)
+        log.add("Removed the saved password for \"\(drive.name)\"")
+    }
+
     func unmountNow() {
         log.add("Manual unmount requested")
         enqueue { await $0.unmountAll(trigger: nil, mode: .normal) }
@@ -324,11 +362,11 @@ final class DriveGuardController {
             guard let trigger else { return true }
             return !settings.config(for: volume.key).disabledTriggers.contains(trigger)
         }
-        // An encrypted drive locks when unmounted, and only its password opens it again. DriveGuard never
-        // handles passwords, so it could not bring the drive back: it is left alone.
-        let locked = volumes.filter { $0.encrypted == true }
+        // An encrypted drive locks when unmounted, and only its password opens it again. Without a saved
+        // password DriveGuard could never bring it back, so it is left alone.
+        let locked = volumes.filter { $0.encrypted == true && !DrivePasswords.has($0.key) }
         for volume in locked {
-            log.add("Skipped \"\(volume.name)\": it is encrypted, so macOS would lock it and only its password could open it again. DriveGuard leaves encrypted drives mounted.", level: .warning)
+            log.add("Skipped \"\(volume.name)\": it is encrypted, and DriveGuard has no password to unlock it again. Add the password in the drive's settings (the slider button next to it).", level: .warning)
         }
         volumes.removeAll { volume in locked.contains { $0.bsdName == volume.bsdName } }
         if volumes.isEmpty {
@@ -511,14 +549,23 @@ final class DriveGuardController {
     private func remount(_ volume: ManagedVolume) async {
         var failure = ""
         for attempt in 1...Self.remountAttempts {
-            switch await disks.remount(volume) {
-            case .locked:
-                log.add("\"\(volume.name)\" is encrypted and locked, and only its password opens it. Unlock it yourself (Disk Utility, or unplug and replug it). It stays on the list.", level: .error)
-                Notifier.shared.post(title: "\(volume.name) is locked", body: "It is encrypted. Unlock it in Disk Utility, or unplug and replug it.")
+            switch await disks.remount(volume, password: { DrivePasswords.read(volume.key) }) {
+            case .needsPassword:
+                log.add("\"\(volume.name)\" is encrypted and locked, and DriveGuard has no password for it. Unlock it yourself (Disk Utility, or unplug and replug it), or save its password in the drive's settings and choose Remount All Drives Now.", level: .error)
+                Notifier.shared.post(title: "\(volume.name) needs its password", body: "It is encrypted and locked. Unlock it in Disk Utility, or save its password in DriveGuard.")
+                return
+            case .notPermitted:
+                log.add("macOS will not let DriveGuard unlock \"\(volume.name)\" (error -69464, \"restricted by Sandbox\"). This is a privacy permission, not the password: give DriveGuard Full Disk Access in System Settings > Privacy & Security, then quit and reopen it. Until then, unlock the drive yourself in Disk Utility. It stays on the list.", level: .error)
+                Notifier.shared.post(title: "DriveGuard needs Full Disk Access", body: "macOS won't let it unlock \(volume.name). Unlock it in Disk Utility, or allow DriveGuard in Privacy & Security.")
+                return
+            case .wrongPassword:
+                log.add("The password saved for \"\(volume.name)\" was refused. DriveGuard will not try it again. Update it in the drive's settings, then choose Remount All Drives Now.", level: .error)
+                Notifier.shared.post(title: "\(volume.name): saved password refused", body: "Update the password in DriveGuard's drive settings.")
                 return
             case .mounted(let path):
                 if let path {
-                    log.add("Remounted \"\(volume.name)\" (\(volume.bsdName)). Confirmed: it is mounted at \(path).")
+                    let how = volume.encrypted == true ? " It was unlocked and mounted." : ""
+                    log.add("Remounted \"\(volume.name)\" (\(volume.bsdName)). Confirmed: it is mounted at \(path).\(how)")
                 } else {
                     log.add("Remounted \"\(volume.name)\" (\(volume.bsdName)), but could not confirm where it is mounted", level: .warning)
                 }

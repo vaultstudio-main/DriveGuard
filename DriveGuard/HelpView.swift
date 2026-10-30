@@ -52,14 +52,15 @@ struct HelpView: View {
                     """)
 
                 topic("Encrypted drives", """
-                    DriveGuard leaves encrypted drives alone. macOS locks an encrypted drive when it is \
-                    unmounted, and only its password opens it again. DriveGuard never asks for or stores \
-                    passwords, so it could not bring the drive back. An encrypted drive shows an \
-                    Encrypted badge, can't be ticked, and stays mounted.
+                    macOS locks an encrypted drive when it is unmounted, and only its password opens it \
+                    again. DriveGuard leaves an encrypted drive alone until you save its password: press \
+                    the slider button next to the drive and choose Save to Keychain. The password stays in \
+                    your Mac's keychain, is never written to the log and is never sent anywhere.
 
-                    If you want an encrypted drive out of the way, eject it yourself in Finder and \
-                    unlock it with its password when you need it. (Time Machine unlocks its own \
-                    encrypted backup drive when it needs it.)
+                    To unlock drives, macOS requires you to give DriveGuard Full Disk Access: open System \
+                    Settings > Privacy & Security > Full Disk Access, switch DriveGuard on, then quit and \
+                    reopen it. Until then DriveGuard won't save a password or unmount an encrypted drive, \
+                    because it could not bring it back. If a drive ever stays locked, unlock it in Disk Utility.
                     """)
 
                 topic("If drives stay unmounted", """

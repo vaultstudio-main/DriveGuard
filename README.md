@@ -57,7 +57,7 @@ Drives come back once every active trigger has ended, so a screen saver stopping
 
 **Time Machine aware.** Before every unmount it asks Time Machine whether a backup is running, and waits if one is (or if it cannot tell). You choose how often it checks again, from 15 to 120 seconds.
 
-**Encrypted drives are left alone.** macOS locks an encrypted drive when it is unmounted, and only its password opens it again. DriveGuard never asks for or stores passwords, so it leaves encrypted drives mounted (they show an Encrypted badge and can't be ticked).
+**Encrypted drives.** macOS locks an encrypted drive when it is unmounted, and only its password opens it again. DriveGuard leaves an encrypted drive alone until you save its password in the drive's settings. The password is kept in your own Mac keychain, checked with macOS when you save it, and used only to unlock the drive when you return. It is never written to the log, never put on a command line and never sent anywhere. macOS only lets an app unlock drives if you give it **Full Disk Access** (System Settings > Privacy & Security); until you do, DriveGuard does not unmount encrypted drives.
 
 **Gentle with busy drives.** If macOS refuses an unmount because something is using the drive, DriveGuard retries a few times, names the programs holding the drive open in the activity log, then leaves the drive mounted and tells you. It also waits if a program is actively writing to the drive.
 
@@ -77,7 +77,7 @@ Drives come back once every active trigger has ended, so a screen saver stopping
 - The app makes no network connections of its own. The links in About and Help open in your browser only when you click them.
 - Your choices (which drives, which triggers, delays and options) are stored on your Mac in the app's own settings, along with the short list of drives it has unmounted and still has to remount.
 - The activity log (the last 500 events) is saved in a small file on your Mac, in `~/Library/Application Support/DriveGuard/`, so it survives a quit, a crash or a restart. **Clear** in the log window empties it, and nothing in it is ever sent anywhere.
-- DriveGuard never asks for, stores or handles passwords.
+- If you save the password of an encrypted drive, it is kept in your Mac's own keychain (one entry per drive), and nowhere else. You can remove it at any time in the drive's settings.
 - To work safely it asks macOS which drives are mounted, asks Time Machine whether a backup is running, and, if an unmount is refused, lists the programs that have files open on that drive. All of this stays on your Mac.
 
 ---

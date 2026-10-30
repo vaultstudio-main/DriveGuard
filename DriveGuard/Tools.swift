@@ -31,6 +31,36 @@ nonisolated enum Tool {
     }
 }
 
+nonisolated extension Tool {
+    /// Runs a tool, optionally feeding it one line on standard input (for passwords: never put those on the
+    /// command line), and returns its exit status and combined output. nil if it could not be started.
+    static func runCapturing(_ path: String, _ arguments: [String], input: String? = nil,
+                             timeout: TimeInterval = 60) async -> (status: Int32, output: String)? {
+        await Task.detached {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: path)
+            process.arguments = arguments
+            let out = Pipe()
+            process.standardOutput = out
+            process.standardError = out
+            let stdin = Pipe()
+            process.standardInput = input == nil ? FileHandle.nullDevice : stdin
+            do { try process.run() } catch { return nil }
+
+            if let input {
+                try? stdin.fileHandleForWriting.write(contentsOf: Data((input + "\n").utf8))
+                try? stdin.fileHandleForWriting.close()
+            }
+            let watchdog = DispatchWorkItem { if process.isRunning { process.terminate() } }
+            DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: watchdog)
+            let data = out.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            watchdog.cancel()
+            return (process.terminationStatus, String(decoding: data, as: UTF8.self))
+        }.value
+    }
+}
+
 /// A file held open on a volume, as reported by lsof.
 nonisolated struct OpenFile: Sendable {
     let pid: String

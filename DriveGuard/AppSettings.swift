@@ -162,6 +162,7 @@ final class AppSettings {
     }
 
     func forget(key: String) {
+        DrivePasswords.remove(key)
         knownDrives.removeAll { $0.key == key }
         selectedKeys.remove(key)
         driveConfigs[key] = nil
