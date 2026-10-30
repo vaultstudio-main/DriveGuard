@@ -393,6 +393,8 @@ final class DriveGuardController {
         volumes.removeAll { volume in locked.contains { $0.bsdName == volume.bsdName } }
         if volumes.isEmpty {
             if !locked.isEmpty { return }
+            // Every maintenance wake fires the triggers; with no drives attached there is nothing worth a line.
+            if external.isEmpty && trigger != nil { return }
             log.add(external.isEmpty
                 ? "No external volumes mounted"
                 : selected.isEmpty
@@ -570,6 +572,7 @@ final class DriveGuardController {
     /// a drive that could not be mounted stays on the list so the next try can finish the job.
     private func remount(_ volume: ManagedVolume) async {
         var failure = ""
+        var shownName = volume.bsdName // the disk name can change after a restart; show the current one
         for attempt in 1...Self.remountAttempts {
             // The disk name can change after a restart; find the drive by its volume ID. A drive that is not
             // connected (yet) stays on the list, and is tried again when a disk appears.
@@ -577,6 +580,7 @@ final class DriveGuardController {
                 log.add("\"\(volume.name)\" is not connected right now. It stays on the list, and DriveGuard remounts it when it appears.", level: .warning)
                 return
             }
+            shownName = current.bsdName
             switch await disks.remount(current, password: { DrivePasswords.read(volume.key) }) {
             case .needsPassword:
                 log.add("\"\(volume.name)\" is encrypted and locked, and DriveGuard has no password for it. Unlock it yourself (Disk Utility, or unplug and replug it), or save its password in the drive's settings and choose Remount All Drives Now.", level: .error)
@@ -593,18 +597,18 @@ final class DriveGuardController {
             case .mounted(let path):
                 if let path {
                     let how = volume.encrypted == true ? " It was unlocked and mounted." : ""
-                    log.add("Remounted \"\(volume.name)\" (\(volume.bsdName)). Confirmed: it is mounted at \(path).\(how)")
+                    log.add("Remounted \"\(volume.name)\" (\(shownName)). Confirmed: it is mounted at \(path).\(how)")
                 } else {
-                    log.add("Remounted \"\(volume.name)\" (\(volume.bsdName)), but could not confirm where it is mounted", level: .warning)
+                    log.add("Remounted \"\(volume.name)\" (\(shownName)), but could not confirm where it is mounted", level: .warning)
                 }
                 removeOwed(volume)
                 return
             case .alreadyMounted(let path):
                 let where_ = path.map { " at \($0)" } ?? ""
                 if attempt > 1 {
-                    log.add("macOS mounted \"\(volume.name)\" (\(volume.bsdName)) itself while DriveGuard was trying. Confirmed: it is mounted\(where_).")
+                    log.add("macOS mounted \"\(volume.name)\" (\(shownName)) itself while DriveGuard was trying. Confirmed: it is mounted\(where_).")
                 } else {
-                    log.add("\"\(volume.name)\" (\(volume.bsdName)) was already mounted\(where_). macOS may have mounted it itself, for example when you unlocked or after a restart.")
+                    log.add("\"\(volume.name)\" (\(shownName)) was already mounted\(where_). macOS may have mounted it itself, for example when you unlocked or after a restart.")
                 }
                 removeOwed(volume)
                 return
@@ -616,12 +620,12 @@ final class DriveGuardController {
                 failure = why
                 // macOS may have mounted it in the meantime (it often does at unlock).
                 if let path = disks.mountPath(of: current) {
-                    log.add("macOS mounted \"\(volume.name)\" (\(volume.bsdName)) itself while DriveGuard was trying (\(why)). Confirmed: it is mounted at \(path).")
+                    log.add("macOS mounted \"\(volume.name)\" (\(shownName)) itself while DriveGuard was trying (\(why)). Confirmed: it is mounted at \(path).")
                     removeOwed(volume)
                     return
                 }
                 if attempt < Self.remountAttempts {
-                    log.add("Mounting \"\(volume.name)\" (\(volume.bsdName)) failed: \(why). Trying again (attempt \(attempt + 1) of \(Self.remountAttempts)).", level: .warning)
+                    log.add("Mounting \"\(volume.name)\" (\(shownName)) failed: \(why). Trying again (attempt \(attempt + 1) of \(Self.remountAttempts)).", level: .warning)
                     do { try await Task.sleep(for: Self.remountPause) } catch {
                         log.add("Cancelled while retrying \"\(volume.name)\"; it stays on the list to remount", level: .warning)
                         return
@@ -629,7 +633,7 @@ final class DriveGuardController {
                 }
             }
         }
-        log.add("Remount of \"\(volume.name)\" (\(volume.bsdName)) failed after \(Self.remountAttempts) attempts: \(failure). It stays on the list; choose Remount All Drives Now to try again, or unplug and replug the drive.", level: .error)
+        log.add("Remount of \"\(volume.name)\" (\(shownName)) failed after \(Self.remountAttempts) attempts: \(failure). It stays on the list; choose Remount All Drives Now to try again, or unplug and replug the drive.", level: .error)
         Notifier.shared.post(title: "Couldn't remount \(volume.name)", body: failure)
     }
 }
